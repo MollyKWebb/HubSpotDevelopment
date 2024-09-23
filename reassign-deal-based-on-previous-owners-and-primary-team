@@ -1,0 +1,113 @@
+  const axios = require('axios');
+  const _ = require('lodash');
+
+  exports.main = async (event, callback) => {
+    const axiosHeaders = {
+      'Authorization': `Bearer ${process.env.YOUR_SECRET_HERE}`,
+      'Content-Type': 'application/json'
+    };
+    const baseUrl = 'https://api.hubapi.com';
+
+    const hubspotAxios = axios.create({
+      baseURL: baseUrl,
+      headers: axiosHeaders
+    });
+
+    try {
+      const dealId = event.inputFields['hs_object_id'];
+      console.log(`Processing deal with ID: ${dealId}`);
+
+      // Retrieve all Users from the HubSpot account
+      let usersResponse;
+      try {
+        usersResponse = await hubspotAxios.get('/crm/v3/objects/users', {
+          params: {
+            limit: 100,
+            properties: 'hubspot_team_id, hs_email, hubspot_owner_id'
+          }
+        });
+        console.log('Users API Response:', JSON.stringify(usersResponse.data, null, 2));
+      } catch (error) {
+        console.error('Error fetching users:', error.response ? error.response.data : error.message);
+        throw new Error('Failed to fetch users');
+      }
+
+      // Filter users with hubspot_team_id "YOUR_TEAM_ID" and map to hubspot_owner_id
+      const eligibleUsers = usersResponse.data.results
+        .filter(user => user.properties.hubspot_team_id === "YOUR_TEAM_ID")
+        .map(user => user.properties.hubspot_owner_id);
+
+      console.log(`Eligible users: ${eligibleUsers.join(', ')}`);
+
+      if (eligibleUsers.length === 0) {
+        throw new Error("No eligible users found with hubspot_team_id YOUR_TEAM_ID");
+      }
+
+      // Retrieve the current and historical values of the hubspot_owner_id property
+      let dealResponse;
+      try {
+        dealResponse = await hubspotAxios.get(`/crm/v3/objects/deals/${dealId}`, {
+          params: {
+            properties: 'hubspot_owner_id',
+            propertiesWithHistory: 'hubspot_owner_id'
+          }
+        });
+        console.log('Deal API Response:', JSON.stringify(dealResponse.data, null, 2));
+      } catch (error) {
+        console.error('Error fetching deal:', error.response ? error.response.data : error.message);
+        throw new Error('Failed to fetch deal information');
+      }
+
+      const currentOwnerId = dealResponse.data.properties.hubspot_owner_id;
+      console.log(`Current owner ID: ${currentOwnerId}`);
+
+      const historicalOwnerIds = dealResponse.data.propertiesWithHistory.hubspot_owner_id
+        ? dealResponse.data.propertiesWithHistory.hubspot_owner_id
+            .map(change => change.value)
+            .filter(id => id !== currentOwnerId)
+        : [];
+      console.log(`Historical owner IDs: ${historicalOwnerIds.join(', ')}`);
+
+      // Reassign the hubspot_owner_id randomly, excluding previously assigned owners
+      const availableUsers = eligibleUsers.filter(userId => 
+        !historicalOwnerIds.includes(userId) && userId !== currentOwnerId
+      );
+      console.log(`Available users for reassignment: ${availableUsers.join(', ')}`);
+
+      if (availableUsers.length === 0) {
+        throw new Error("No available users to reassign the deal");
+      }
+
+      const newOwnerId = _.sample(availableUsers);
+      console.log(`Randomly selected new owner ID: ${newOwnerId}`);
+
+      // Update the deal with the new owner
+      try {
+        const updateResponse = await hubspotAxios.patch(`/crm/v3/objects/deals/${dealId}`, {
+          properties: {
+            hubspot_owner_id: newOwnerId
+          }
+        });
+        console.log('Deal Update API Response:', JSON.stringify(updateResponse.data, null, 2));
+      } catch (error) {
+        console.error('Error updating deal:', error.response ? error.response.data : error.message);
+        throw new Error('Failed to update deal with new owner');
+      }
+
+      console.log(`Successfully reassigned deal ${dealId} to new owner ${newOwnerId}`);
+
+      callback({
+        outputFields: {
+          newOwnerId: newOwnerId
+        }
+      });
+
+    } catch (error) {
+      console.error('Error:', error.message);
+      callback({
+        outputFields: {
+          error: error.message
+        }
+      });
+    }
+  };
