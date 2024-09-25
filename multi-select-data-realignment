@@ -1,0 +1,88 @@
+  const hubspot = require('@hubspot/api-client');
+
+  exports.main = async (event, callback) => {
+    // Initialize HubSpot client with retry logic
+    const hubspotClient = new hubspot.Client({
+      accessToken: process.env.YOUR_SECRET_HERE,
+      numberOfApiCallRetries: 3,
+      useLimiter: true
+    });
+
+    const contactId = event.inputFields['hs_object_id'];
+    const properties = ["communities_of_interest2"];
+    const propertiesWithHistory = ["communities_of_interest2"];
+    const associations = undefined;
+    const archived = false;
+
+    try {
+      // Fetch the contact with property history
+      const contact = await hubspotClient.crm.contacts.basicApi.getById(
+        contactId,
+        properties,
+        propertiesWithHistory,
+        associations,
+        archived
+      );
+
+      console.log(`Processing contact ${contactId}`);
+
+      await processContact(hubspotClient, contact);
+
+      callback({
+        outputFields: {
+          message: "Contact processing completed successfully"
+        }
+      });
+    } catch (e) {
+      console.error('Error in contact processing:', e);
+      if (e.message === 'HTTP request failed') {
+        console.error(JSON.stringify(e.response, null, 2));
+      } else {
+        console.error(e);
+      }
+      callback({
+        outputFields: {
+          error: e.message
+        }
+      });
+    }
+  };
+
+  async function processContact(hubspotClient, contact) {
+    const contactId = contact.id;
+    const currentValue = contact.properties.communities_of_interest2 || '';
+    const currentCommunities = currentValue.split(';').filter(Boolean);
+
+    const allHistoricalValues = contact.propertiesWithHistory.communities_of_interest2 || [];
+    const historicalCommunities = new Set();
+
+    allHistoricalValues.forEach(entry => {
+      if (entry.value) {
+        entry.value.split(';').forEach(community => {
+          historicalCommunities.add(community.trim());
+        });
+      }
+    });
+
+    const updatedCommunities = new Set(currentCommunities);
+    historicalCommunities.forEach(community => {
+      if (!currentCommunities.includes(community)) {
+        updatedCommunities.add(community);
+      }
+    });
+
+    const updatedValue = Array.from(updatedCommunities).join(';');
+
+    if (updatedValue !== currentValue) {
+      await hubspotClient.crm.contacts.basicApi.update(contactId, {
+        properties: {
+          communities_of_interest2: updatedValue
+        }
+      });
+      console.log(`Updated Community of Interest property for contact ${contactId}: ${updatedValue}`);
+    } else {
+      console.log(`No changes needed for contact ${contactId}`);
+    }
+
+    return updatedValue;
+  }
