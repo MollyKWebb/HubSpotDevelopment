@@ -1,0 +1,71 @@
+const hubspot = require('@hubspot/api-client');
+
+exports.main = async (event, callback) => {
+  // Initialize the HubSpot client
+  const hubspotClient = new hubspot.Client({
+    accessToken: process.env.privateappkey
+  });
+
+  try {
+    // 1. Retrieve the enrolled Deal's record ID
+    const dealId = event.inputFields['hs_object_id'];
+
+    if (!dealId) {
+      throw new Error('Deal ID not found in the input fields');
+    }
+
+    console.log(`Processing Deal ID: ${dealId}`);
+
+    // 2. Get all associated tasks for the deal using the batch API
+    const BatchInputPublicFetchAssociationsBatchRequest = { 
+      inputs: [{ id: dealId }]
+    };
+    const fromObjectType = "0-3"; // Object type ID for deals 
+    const toObjectType = "0-27";   // Object type ID for tasks
+
+    const apiResponse = await hubspotClient.crm.associations.v4.batchApi.getPage(
+      fromObjectType, 
+      toObjectType, 
+      BatchInputPublicFetchAssociationsBatchRequest
+    );
+
+    const associatedTasks = apiResponse.results[0]?.to || [];
+
+    if (associatedTasks.length === 0) {
+      console.log('No associated tasks found for this deal.');
+      return callback({
+        outputFields: {
+          tasksCompleted: 0
+        }
+      });
+    }
+
+    // 3. Update all associated tasks to complete
+    const taskIds = associatedTasks.map(result => result.toObjectId);
+    const batchUpdatePromises = taskIds.map(taskId => 
+      hubspotClient.crm.objects.basicApi.update('tasks', taskId, {
+        properties: {
+          hs_task_status: 'COMPLETED'
+        }
+      })
+    );
+
+    await Promise.all(batchUpdatePromises);
+
+    console.log(`Completed ${taskIds.length} tasks associated with Deal ID: ${dealId}`);
+
+    // 4. Return the number of tasks completed
+    return callback({
+      outputFields: {
+        tasksCompleted: taskIds.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Error in custom coded action:', error);
+    if (error.message === 'HTTP request failed') {
+      console.error(JSON.stringify(error.response, null, 2));
+    }
+    throw error;
+  }
+};
